@@ -4678,6 +4678,7 @@ it("always offers the attention tools, on search, keeps the thread when attentio
 it.each(["complete", "stop-external", "stop-publish"])(
   "keeps an added tool bound to its request across a wait: %s",
   async (outcome) => {
+    vi.useFakeTimers();
     const stop = outcome !== "complete";
     const f = fixture();
     const entered = deferred<void>();
@@ -4703,7 +4704,19 @@ it.each(["complete", "stop-external", "stop-publish"])(
     const interruptible = vi.fn<NonNullable<Delivery["interruptible"]>>();
     await f.runtime.run({ ...f.delivery("write"), interruptible });
     await vi.waitFor(() => expect(f.starts()).toHaveLength(1));
-    const pending = f.tool("notes_write", { wait: true, text: "first" });
+    f.emit({
+      id: "held-note",
+      method: "item/tool/call",
+      params: {
+        threadId: (f.starts()[0]?.params as { threadId: string } | undefined)
+          ?.threadId,
+        turnId: "turn-1",
+        namespace: "buzz",
+        callId: "held-note",
+        tool: "notes_write",
+        arguments: { wait: true, text: "first" },
+      },
+    });
     try {
       await entered.promise;
       expect(signals[0]?.aborted).toBe(false);
@@ -4718,6 +4731,14 @@ it.each(["complete", "stop-external", "stop-publish"])(
           accepted.resolve();
         }
         await stopping;
+        await vi.waitFor(() =>
+          expect(
+            f.sent.some(
+              (wire) => wire.method === "thread/backgroundTerminals/list",
+            ),
+          ).toBe(true),
+        );
+        await vi.advanceTimersByTimeAsync(1_000);
         await f.runtime.run(f.delivery("write again"));
         await vi.waitFor(() => expect(f.starts()).toHaveLength(2));
         expect(
@@ -4728,7 +4749,14 @@ it.each(["complete", "stop-external", "stop-publish"])(
     } finally {
       release.resolve();
     }
-    const reply = JSON.stringify(await pending);
+    await vi.waitFor(() =>
+      expect(
+        f.sent.some((wire) => wire.id === "held-note" && !wire.method),
+      ).toBe(true),
+    );
+    const reply = JSON.stringify(
+      f.sent.find((wire) => wire.id === "held-note" && !wire.method),
+    );
     expect(reply).toContain(stop ? "The owner stopped the turn" : "saved");
     expect(
       f.publish.mock.calls.map(
