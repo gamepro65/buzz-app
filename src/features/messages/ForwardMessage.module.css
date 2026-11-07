@@ -16,3 +16,9 @@
   border-radius: var(--radius-lg);
   background: var(--surface-inset);
 }
+
+.channel {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}

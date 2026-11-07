@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement, ReactNode } from "react";
@@ -20,7 +21,7 @@ import {
 import { ToastProvider } from "../../shared/design-system/ui/Toast";
 import { createNavigationController } from "../navigation/controller";
 import { createMemoryHistory } from "../navigation/history";
-import type { ChannelMessage } from "../relay/contracts";
+import type { ChannelMessage, ChannelSummary } from "../relay/contracts";
 import type { OutboxRecovery, OutgoingEvent } from "../relay/outbox";
 import type { RelaySession } from "../relay/session";
 import { ForwardMessageProvider, useForwardMessage } from "./ForwardMessage";
@@ -119,14 +120,20 @@ function pendingForward(note = "Saved note"): OutgoingEvent {
     delivery: "unknown",
   };
 }
+const general = "22222222-2222-4222-8222-222222222222";
+const writable = [
+  { id: general, name: "general", channelType: "stream" },
+] as ChannelSummary[];
 function setup({
   saved = [] as OutgoingEvent[],
   nested = false,
   content = <Trigger />,
+  channelList = [] as ChannelSummary[],
 }: {
   saved?: OutgoingEvent[];
   nested?: boolean;
   content?: ReactNode;
+  channelList?: ChannelSummary[];
 } = {}) {
   const history = createMemoryHistory();
   const controller = createNavigationController(history);
@@ -145,7 +152,7 @@ function setup({
     scope: { viewer, communityOrigin: "https://relay.example" },
   });
   stops.push(controller.dispose);
-  const channels = { channels: [] },
+  const channels = { channels: channelList },
     profiles = new Map();
   const choices = {
     identities: [] as { pubkey: string; managed: boolean }[],
@@ -549,6 +556,169 @@ it("names and opens the saved forward's DM when the outbox loads it after anothe
     }),
   );
   expect(messages.send).not.toHaveBeenCalled();
+});
+
+async function chooseChannel(
+  user: ReturnType<typeof userEvent.setup>,
+  name: string,
+) {
+  await user.click(screen.getByRole("button", { name: "Forward source" }));
+  await screen.findByRole("dialog", { name: "Forward message" });
+  await user.click(screen.getByRole("radio", { name: "Channel" }));
+  await user.click(screen.getByRole("combobox", { name: "Channel" }));
+  await user.click(await screen.findByRole("option", { name }));
+}
+
+it("forwards a note and permalink into a chosen channel without opening a DM", async () => {
+  const user = userEvent.setup();
+  const { navigation, directMessages, messages, outbox, operations } = setup({
+    channelList: writable,
+  });
+  await chooseChannel(user, "general");
+  expect(screen.getByRole("combobox", { name: "Channel" })).toHaveTextContent(
+    "#general",
+  );
+  await user.type(
+    screen.getByRole("textbox", { name: "Note (optional)" }),
+    "For the team",
+  );
+  await user.click(screen.getByRole("button", { name: "Forward" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Forward message" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(directMessages.open).not.toHaveBeenCalled();
+  expect(messages.send).toHaveBeenCalledWith(
+    general,
+    `For the team\n\nbuzz://message?channel=alpha&id=${messageId}`,
+    [],
+    [],
+    {
+      key: "message:forward",
+      value: JSON.stringify({
+        source: { channelId: "alpha", forward: messageId },
+        channel: { id: general, name: "general" },
+        note: "For the team",
+      }),
+    },
+  );
+  expect(directMessages.delivered).toHaveBeenCalledWith(
+    "e".repeat(64),
+    general,
+    expect.any(AbortSignal),
+  );
+  expect(outbox.acknowledge).toHaveBeenCalledWith("e".repeat(64));
+  expect(operations()).toEqual([]);
+  expect(
+    await screen.findByText("Message forwarded to #general"),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Open #general" }));
+  await waitFor(() =>
+    expect(navigation.snapshot().entry.target).toEqual({
+      version: 1,
+      kind: "conversation",
+      scope: { viewer, communityOrigin: "https://relay.example" },
+      channelId: general,
+      messageId: "e".repeat(64),
+    }),
+  );
+});
+
+it("offers only current channels the viewer can post in", async () => {
+  const user = userEvent.setup();
+  setup({
+    channelList: [
+      ...writable,
+      { id: "forum", name: "ideas", channelType: "forum" },
+      { id: "secret", name: "leads", channelType: "stream", private: true },
+      {
+        id: "read",
+        name: "announcements",
+        channelType: "stream",
+        readOnly: true,
+      },
+      { id: "old", name: "archived", channelType: "stream", archived: true },
+      { id: "dm", name: "Avery Chen", channelType: "dm" },
+      { id: "solo", name: "Notes", channelType: "solo" },
+      { id: "huddle", name: "huddle", channelType: "stream", huddle: true },
+    ] as ChannelSummary[],
+  });
+  await user.click(screen.getByRole("button", { name: "Forward source" }));
+  await screen.findByRole("dialog", { name: "Forward message" });
+  await user.click(
+    within(screen.getByRole("radiogroup", { name: "Forward to" })).getByRole(
+      "radio",
+      { name: "Channel" },
+    ),
+  );
+  expect(screen.getByRole("button", { name: "Forward" })).toBeDisabled();
+  await user.click(screen.getByRole("combobox", { name: "Channel" }));
+  await screen.findByRole("option", { name: "general" });
+  expect(
+    screen.getAllByRole("option").map((option) => option.textContent),
+  ).toEqual(["general", "ideas", "leads"]);
+  await user.click(screen.getByRole("option", { name: "leads" }));
+  // A private channel is named without the public channel's hash.
+  expect(screen.getByRole("combobox", { name: "Channel" })).toHaveTextContent(
+    /^leads$/,
+  );
+  expect(screen.getByRole("button", { name: "Forward" })).toBeEnabled();
+});
+
+it("sends to the chosen channel, not a person chosen before switching", async () => {
+  const user = userEvent.setup();
+  const { directMessages, messages } = setup({ channelList: writable });
+  await choose(user);
+  await user.click(screen.getByRole("radio", { name: "Channel" }));
+  expect(screen.getByRole("button", { name: "Forward" })).toBeDisabled();
+  await user.click(screen.getByRole("combobox", { name: "Channel" }));
+  await user.click(await screen.findByRole("option", { name: "general" }));
+  await user.click(screen.getByRole("button", { name: "Forward" }));
+  await waitFor(() => expect(messages.send).toHaveBeenCalledTimes(1));
+  expect(messages.send.mock.calls[0]?.[0]).toBe(general);
+  expect(directMessages.open).not.toHaveBeenCalled();
+});
+
+it("restores a saved channel forward after reload and confirms its exact event", async () => {
+  const user = userEvent.setup();
+  const saved = pendingForward();
+  const { directMessages, messages, outbox } = setup({
+    saved: [
+      {
+        ...saved,
+        event: { ...saved.event, tags: [["h", general]] },
+        recovery: {
+          key: "message:forward",
+          value: JSON.stringify({
+            source: { channelId: "alpha", forward: messageId },
+            channel: { id: general, name: "general" },
+            note: "Saved note",
+          }),
+        },
+      },
+    ],
+  });
+  await user.click(screen.getByRole("button", { name: "Forward source" }));
+  const retry = await screen.findByRole("button", { name: "Retry forward" });
+  expect(screen.getByRole("radio", { name: "Channel" })).toBeChecked();
+  expect(screen.getByRole("combobox", { name: "Channel" })).toHaveTextContent(
+    "#general",
+  );
+  await user.click(retry);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("dialog", { name: "Forward message" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(directMessages.open).not.toHaveBeenCalled();
+  expect(messages.send).not.toHaveBeenCalled();
+  expect(directMessages.delivered).toHaveBeenCalledWith(
+    "9".repeat(64),
+    general,
+    expect.any(AbortSignal),
+  );
+  expect(outbox.acknowledge).toHaveBeenCalledWith("9".repeat(64));
 });
 
 it("blocks another forward while a saved one is pending and offers to review it", async () => {
