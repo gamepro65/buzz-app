@@ -93,9 +93,17 @@ export function PluginImport({
   onRequestConfirmed,
   onRequestEnded,
   holdReview,
+  queuedUpdate,
 }: {
   initialGit?: GitPluginSource | undefined;
-  updateAction?: { source: GitUpdateSource; apply: boolean } | undefined;
+  updateAction?:
+    | {
+        source: GitUpdateSource;
+        apply: boolean;
+        candidateRevision?: string;
+        candidatePublisher?: string | null;
+      }
+    | undefined;
   requestSignal?: AbortSignal | undefined;
   initialUpdateAvailable?: boolean;
   plugins: PluginManager;
@@ -121,6 +129,14 @@ export function PluginImport({
   onRequestEnded?: ((id: number) => void) | undefined;
   /** Marks a review dialog as open so a plugin request cannot open a second one. */
   holdReview?: (() => () => void) | undefined;
+  queuedUpdate?:
+    | {
+        validate(): string | undefined;
+        confirmed(): (() => void) | undefined;
+        settled(outcome: PluginInstallOutcome): void;
+        ended(error?: string): void;
+      }
+    | undefined;
   /** Signs in to the selected community's Buzz git; null for other repositories. */
   authorizeGit?: (
     repository: string,
@@ -239,9 +255,13 @@ export function PluginImport({
   const boundId = useRef<number>(undefined);
   const settleRequest = useRef(onRequestSettled);
   const endRequest = useRef(onRequestEnded);
+  const queuedUpdateRef = useRef(queuedUpdate);
+  const lastQueuedUpdateFailure = useRef<string | undefined>(undefined);
+  const queuedUpdateError = useRef<string | undefined>(undefined);
   useEffect(() => {
     settleRequest.current = onRequestSettled;
     endRequest.current = onRequestEnded;
+    queuedUpdateRef.current = queuedUpdate;
   });
   useEffect(() => {
     mounted.current = true;
@@ -249,9 +269,14 @@ export function PluginImport({
       mounted.current = false;
       queueMicrotask(() => {
         const id = boundId.current;
-        if (mounted.current || id === undefined) return;
-        if (endRequest.current) endRequest.current(id);
-        else settleRequest.current?.(id, "cancelled");
+        if (mounted.current) return;
+        if (id !== undefined) {
+          if (endRequest.current) endRequest.current(id);
+          else settleRequest.current?.(id, "cancelled");
+        } else
+          queuedUpdateRef.current?.ended(
+            lastQueuedUpdateFailure.current ?? queuedUpdateError.current,
+          );
       });
     };
   }, []);
@@ -303,6 +328,11 @@ export function PluginImport({
       checkPending.current = false;
       if (current.active) setChecking(false);
     }
+  }
+  function failQueuedUpdateReview(failure: string) {
+    if (!updateAction || !queuedUpdate) return;
+    lastQueuedUpdateFailure.current = failure;
+    queuedUpdate.ended(failure);
   }
   const startSavedFolder = useEffectEvent(() => {
     if (
@@ -380,6 +410,24 @@ export function PluginImport({
     pinned && preview && preview.commit?.toLowerCase() !== pinned
       ? "This repository is not at the commit that was requested. Nothing was installed."
       : null;
+  const candidateDriftError = (
+    reviewedCandidate = candidate,
+  ): string | null => {
+    if (!updateAction || !reviewedCandidate) return null;
+    if (
+      updateAction.candidateRevision !== undefined &&
+      reviewedCandidate.revision !== updateAction.candidateRevision
+    )
+      return "The update candidate changed after it was checked. Check for updates again before reviewing it.";
+    if (
+      updateAction.candidatePublisher !== undefined &&
+      (reviewedCandidate.publisher ?? null) !== updateAction.candidatePublisher
+    )
+      return "The update publisher changed after it was checked. Check for updates again before reviewing it.";
+    return null;
+  };
+  const updateError = pinError ?? candidateDriftError();
+  queuedUpdateError.current = error ?? updateError ?? undefined;
   const duplicate = updating && !updateId && (!requested || !!conflict);
   const upToDate =
     !conflict &&
@@ -413,10 +461,18 @@ export function PluginImport({
       onReviewHandled?.();
       return;
     }
-    if (!preview) return;
+    if (!preview || (updateAction && !candidate)) return;
     setOpen(true);
     onReviewHandled?.();
-  }, [reviewRequested, loading, preview, error, onReviewHandled]);
+  }, [
+    reviewRequested,
+    loading,
+    preview,
+    error,
+    updateAction,
+    candidate,
+    onReviewHandled,
+  ]);
 
   const startRequestedReview = useEffectEvent(() => {
     if (!savedSource) {
@@ -538,12 +594,13 @@ export function PluginImport({
           const warning = next.warnings.find((warning) =>
             warning.startsWith(prefix),
           );
-          throw new Error(
+          const failure =
             warning ??
-              (savedSource
-                ? "The saved folder or repository no longer contains this plugin at its installed path."
-                : "This source does not contain the installed plugin. Choose a source with the same plugin ID."),
-          );
+            (savedSource
+              ? "The saved folder or repository no longer contains this plugin at its installed path."
+              : "This source does not contain the installed plugin. Choose a source with the same plugin ID.");
+          failQueuedUpdateReview(failure);
+          throw new Error(failure);
         }
       }
       setError(null);
@@ -600,9 +657,9 @@ export function PluginImport({
     const candidates = result.candidates.filter((item) => item.path === path);
     if (candidates.length) return { ...result, candidates };
     await imports?.discard(result.token).catch(() => {});
-    throw new Error(
-      `This repository has no plugin at ${path}. Nothing was installed.`,
-    );
+    const failure = `This repository has no plugin at ${path}. Nothing was installed.`;
+    failQueuedUpdateReview(failure);
+    throw new Error(failure);
   }
   async function dismiss() {
     if (blocked || pending.current || !preview) return;
@@ -718,18 +775,40 @@ export function PluginImport({
       pinError
     )
       return;
+    lastQueuedUpdateFailure.current = undefined;
     if (updateAction && updateId) {
       const source = pluginUpdateSource(plugins, updateId);
       if (
         !source ||
         updateSourceKey(source) !== updateSourceKey(updateAction.source)
       ) {
-        showError(
-          "The plugin source changed. Close this review and check again.",
-          installButton.current,
-        );
+        const message =
+          "The plugin source changed. Close this review and check again.";
+        lastQueuedUpdateFailure.current = message;
+        showError(message, installButton.current);
         return;
       }
+    }
+    const candidateError = candidateDriftError(candidate);
+    if (candidateError) {
+      lastQueuedUpdateFailure.current = candidateError;
+      showError(candidateError, installButton.current);
+      return;
+    }
+    const validationError = queuedUpdate?.validate();
+    if (validationError) {
+      lastQueuedUpdateFailure.current = validationError;
+      showError(validationError, installButton.current);
+      return;
+    }
+    const requestId = bound?.id;
+    const unconfirmQueue = queuedUpdate?.confirmed();
+    if (queuedUpdate && !unconfirmQueue) {
+      const message =
+        "This update review is no longer active. Check for updates again before reviewing it.";
+      lastQueuedUpdateFailure.current = message;
+      showError(message, installButton.current);
+      return;
     }
     const current = lifetime.current;
     current.installing = true;
@@ -741,8 +820,7 @@ export function PluginImport({
     pending.current = true;
     setLoading(true);
     setError(null);
-    const requestId = bound?.id;
-    const unconfirm =
+    const unconfirmRequest =
       requestId === undefined ? undefined : onRequestConfirmed?.(requestId);
     try {
       const success = await plugins.installImport(
@@ -750,12 +828,11 @@ export function PluginImport({
         candidate.path,
       );
       if (!success) {
-        if (!current.active) return;
-        showError(
+        const failure =
           plugins.snapshot().error ??
-            "Plugin installation wasn’t confirmed. Check the preview and try again.",
-          installButton.current,
-        );
+          "Plugin installation wasn’t confirmed. Check the preview and try again.";
+        lastQueuedUpdateFailure.current = failure;
+        if (current.active) showError(failure, installButton.current);
         return;
       }
       // Native keeps the prepared preview after install.
@@ -769,6 +846,7 @@ export function PluginImport({
             requestId,
             existing ? "updated" : "installed",
           );
+        else queuedUpdate?.settled(existing ? "updated" : "installed");
         onClosed?.();
         return;
       }
@@ -779,11 +857,22 @@ export function PluginImport({
           revision: candidate.revision,
         });
       releaseRequest(existing ? "updated" : "installed");
+      if (requestId === undefined)
+        queuedUpdate?.settled(existing ? "updated" : "installed");
       setOpen(false);
       onClosed?.();
+    } catch (reason) {
+      const failure = reason instanceof Error ? reason.message : String(reason);
+      lastQueuedUpdateFailure.current = failure;
+      if (current.active) showError(failure, installButton.current);
     } finally {
-      unconfirm?.();
+      unconfirmRequest?.();
+      unconfirmQueue?.();
       current.installing = false;
+      if (!current.active)
+        queuedUpdateRef.current?.ended(
+          lastQueuedUpdateFailure.current ?? queuedUpdateError.current,
+        );
       if (!current.active && current.token) {
         await imports.discard(current.token).catch(() => {});
         current.token = "";
@@ -801,6 +890,7 @@ export function PluginImport({
       !candidate ||
       loading ||
       error ||
+      updateError ||
       upToDate ||
       automaticToken.current === preview.token
     )
@@ -828,7 +918,7 @@ export function PluginImport({
   const automaticUpdate =
     !!updateAction?.apply &&
     !error &&
-    !pinError &&
+    !updateError &&
     !conflict &&
     !upToDate &&
     (!preview ||
@@ -1110,7 +1200,7 @@ export function PluginImport({
                 candidate &&
                 !upToDate &&
                 !conflict &&
-                !pinError &&
+                !updateError &&
                 (!existing || !!updateId || requested) && (
                   <Button
                     ref={installButton}
@@ -1390,7 +1480,9 @@ export function PluginImport({
                     Opened from {requester(bound.origin)}.
                   </p>
                 )}
-                {reviewing && pinError && <p className="m-0">{pinError}</p>}
+                {reviewing && updateError && error !== updateError && (
+                  <p className="m-0">{updateError}</p>
+                )}
                 {reviewing && (requested || pinned) && preview.commit && (
                   <p className="m-0 break-all text-caption text-muted">
                     Commit {shortCommit(preview.commit)}

@@ -348,13 +348,92 @@ type PluginInstaller = {
     id: string,
     listener: (status: "installed" | "absent" | "unavailable") => void,
   ): () => void;
+  updates?: PluginUpdateCapability;
 };
 ```
 
-These status methods may be missing on an older host even when the optional
-service is available. Feature-check each method before calling it; see the
-[plugin authoring guide](plugin-authoring-guide.md#extension-points) for
+These installation-status methods may be missing on an older host even when the
+optional service is available. Feature-check each method before calling it; see
+the [plugin authoring guide](plugin-authoring-guide.md#extension-points) for
 status semantics and subscription-lifetime guidance.
+
+```ts
+type PluginUpdateToken = string; // opaque; do not parse or construct one
+type PluginUpdateSnapshot = {
+  status: "disabled" | "unavailable" | "checking" | "fresh" | "stale" | "error";
+  checkedAt: number | null; // epoch milliseconds for the last completed check
+  candidates: readonly {
+    token: PluginUpdateToken;
+    id: string;
+    name: string;
+    installedRevision: string;
+    candidateRevision: string;
+  }[];
+  errors: readonly { id: string; message: string }[];
+};
+type PluginUpdateQueueSnapshot = {
+  id: string;
+  status: "queued" | "reviewing" | "completed" | "cancelled" | "failed" | "partial";
+  items: readonly {
+    token: PluginUpdateToken;
+    id: string;
+    status: "queued" | "reviewing" | "installed" | "partial" | "cancelled" | "failed";
+    error?: string;
+  }[];
+};
+type PluginUpdateCapability = {
+  getSnapshot(): PluginUpdateSnapshot;
+  subscribe(listener: () => void): () => void;
+  refresh(): Promise<PluginUpdateSnapshot>;
+  queueUpdates(
+    tokens: readonly PluginUpdateToken[],
+  ): PluginUpdateQueueSnapshot | undefined;
+  getQueue(id: string): PluginUpdateQueueSnapshot | undefined;
+  subscribeQueue(id: string, listener: () => void): () => void;
+  cancelQueue(id: string): boolean;
+};
+```
+
+`updates` is optional in the public type for compatibility with older hosts. In
+the current host, a present `pluginInstaller` service always exposes the bridge;
+its snapshot is `unavailable` until the retained checker registers and if it
+later unregisters. An absent service or `updates` member is unknown, not an empty
+or up-to-date result. In a host that exposes the bridge, `unavailable` means the
+retained checker or its catalog/import source is not available; `disabled` means
+no installed plugin currently has update checks enabled with a checkable source;
+`checking` is an in-progress refresh; `stale`
+means no recent completed check or installed source/state changed since the last
+check; `error` means one or more checks failed; `fresh` describes a completed
+aggregate check of currently eligible sources. It is not a per-plugin "up to date" result.
+The snapshot contains known update candidates and known check errors, but does not expose a
+per-plugin checked-current or eligibility result. A plugin absent from both
+arrays is unknown: it may be current, opted out, unsupported, or lack a
+checkable saved source. Consumers must not infer per-plugin status from a fresh
+snapshot miss; only listed candidates are known updates and listed errors are
+known check failures.
+
+Candidate tokens are opaque and bound to the checker’s current source, installed
+revision and publisher, candidate revision and publisher, enabled state, and
+saved update-check choice. `refresh()` invokes the host's existing retained
+checker; it does not create a second poller or install anything.
+`queueUpdates(tokens)` accepts only tokens from a completed check within the
+freshness window when each token still names a current candidate for its
+installed plugin. It can accept a known candidate even when the aggregate status
+is `error`, or `stale` because another plugin's source changed after that check,
+if that token remains current. A source change during a check invalidates tokens
+from that run. It returns `undefined` while checking, after expiry, or when a
+requested token is no longer current, or when 50 queues are already pending or
+reviewing. Accepted queues share one host-retained serialized review path across
+callers. The host retains at most 50 queue snapshots, evicting the oldest
+terminal snapshot when needed; terminal queues no longer occupy the review
+scheduler. Every item opens the existing explicit review and waits for the owner
+to confirm; no item is installed silently. An item is `partial` when its update
+was installed but the enabled plugin failed to activate at that revision.
+`cancelQueue()` cancels pending or unopened reviews, but does not undo an
+operation the owner already confirmed. Queue state is retained by the host
+provider, not across a host restart. Subscribe before reading `getSnapshot()` or
+`getQueue()` so an update cannot be missed, and release subscriptions with the
+plugin effect. A non-fresh status is not evidence that no updates exist.
 
 `requestInstall` never installs silently. It opens Settings → Plugins with the Git
 source prefilled and read-only, and the user still chooses **Find**, reviews the
