@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Header, InlineHeader } from "../shared/design-system/ui/Header";
 import { SettingsGroup } from "../shared/design-system/ui/SettingsGroup";
 import { PreferenceRow } from "../shared/design-system/ui/PreferenceRow";
+import { AlertDialog } from "../shared/design-system/ui/AlertDialog";
 import { Button } from "../shared/design-system/ui/Button";
 import { EmptyState } from "../shared/design-system/ui/EmptyState";
 import { LockIcon } from "../shared/design-system/icons";
@@ -29,7 +30,17 @@ export function SecuritySettings({
 }) {
   const [tools, setTools] = useState<PairedTool[] | null>(null);
   const [error, setError] = useState("");
-  const [revoking, setRevoking] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<PairedTool | null>(null);
+  const [revoking, setRevoking] = useState(false);
+  const section = useRef<HTMLElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  /** Each row's Revoke, so the dialog can hand focus back to one. */
+  const revokes = useRef(new Map<string, HTMLElement>());
+  /** After a revoke, where the dialog leaves focus: the Revoke that takes the
+   * row's place, else the previous row's, else this section rather than
+   * body. Base UI picks the target before the row leaves the DOM, so it is
+   * chosen when the revoke succeeds. */
+  const landing = useRef<HTMLElement | null>(null);
   const refresh = useCallback(async () => {
     try {
       setTools(await listPairedTools());
@@ -43,31 +54,43 @@ export function SecuritySettings({
     void refresh();
     return onPairingEvents({ changed: () => void refresh() });
   }, [refresh]);
-  const revoke = async (id: string) => {
-    setRevoking(id);
+  const revoke = async (tool: PairedTool) => {
+    setRevoking(true);
     try {
-      await revokePairedTool(id);
-      setTools((current) => current?.filter((tool) => tool.id !== id) ?? null);
+      await revokePairedTool(tool.id);
+      const listed = tools ?? [];
+      const index = listed.findIndex((t) => t.id === tool.id);
+      landing.current =
+        [...listed.slice(index + 1), ...listed.slice(0, index).reverse()]
+          .map((t) => revokes.current.get(t.id))
+          .find(Boolean) ?? section.current;
+      setTools((current) => current?.filter((t) => t.id !== tool.id) ?? null);
       setError("");
+      setConfirming(null);
     } catch (reason) {
       setError(String(reason));
     } finally {
-      setRevoking(null);
+      setRevoking(false);
     }
   };
+  const alert = error && (
+    <p role="alert" className="text-body-sm text-danger">
+      {error}
+    </p>
+  );
   return (
-    <section aria-labelledby="security-settings-title">
+    <section
+      ref={section}
+      tabIndex={-1}
+      aria-labelledby="security-settings-title"
+    >
       <Header
         id="security-settings-title"
         title="Security"
         subtitle="Tools paired on this device, and applications you authorize to act as you."
       />
       <InlineHeader id="paired-tools-title" title="Paired command-line tools" />
-      {error && (
-        <p role="alert" className="text-body-sm text-danger">
-          {error}
-        </p>
-      )}
+      {!confirming && alert}
       {tools?.length === 0 ? (
         <EmptyState
           icon={<LockIcon />}
@@ -84,9 +107,15 @@ export function SecuritySettings({
                 subtitle={`${tool.relay} · Paired ${date(tool.created)} · Last used ${date(tool.lastUsed)} · Expires ${date(tool.expires)} unless used`}
                 trailing={
                   <Button
-                    loading={revoking === tool.id}
-                    disabled={revoking !== null}
-                    onClick={() => void revoke(tool.id)}
+                    ref={(button) => {
+                      if (button) revokes.current.set(tool.id, button);
+                      else revokes.current.delete(tool.id);
+                    }}
+                    onClick={() => {
+                      landing.current = null;
+                      setError("");
+                      setConfirming(tool);
+                    }}
                   >
                     Revoke
                   </Button>
@@ -95,6 +124,38 @@ export function SecuritySettings({
             ))}
           </SettingsGroup>
         )
+      )}
+      {confirming && (
+        <AlertDialog
+          title={`Revoke ${confirming.client}?`}
+          description="It stops working until you pair it again with buzz auth desktop pair."
+          pending={revoking}
+          initialFocus={cancel}
+          finalFocus={() =>
+            landing.current ?? revokes.current.get(confirming.id) ?? false
+          }
+          onClose={() => setConfirming(null)}
+          actions={
+            <>
+              <Button
+                ref={cancel}
+                disabled={revoking}
+                onClick={() => setConfirming(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                loading={revoking}
+                onClick={() => void revoke(confirming)}
+              >
+                Revoke
+              </Button>
+            </>
+          }
+        >
+          {alert}
+        </AlertDialog>
       )}
       {viewer && <ExternalIdentityAuthorization key={viewer} viewer={viewer} />}
     </section>

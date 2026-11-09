@@ -278,8 +278,9 @@ pairing; finish, then run the command again. Once allowed, the tool can post,
 read and use your sign-in through Buzz, and your key stays in Buzz. It can't
 edit your profile, delete, or manage members, agents or moderation: do those
 in Buzz.
-**Settings → Security** lists paired tools. **Revoke** stops one. Signing out
-revokes all of them, and a pairing unused for 30 days expires.
+**Settings → Security** lists paired tools. **Revoke** asks first, then stops one
+until you pair it again. Signing out revokes all of them, and a pairing unused
+for 30 days expires.
 
 ## Conversations and communities
 
