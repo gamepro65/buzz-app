@@ -256,9 +256,10 @@ comes from that app. Protected agents cannot use this connection. Keep Buzz
 open. An unavailable agent cannot authorize access. Enable its runtime plugin
 or use the Buzz copy that runs it.
 
-Use **Settings → External apps → Revoke access** to stop it. Changing community
-or identity also ends access. If a connection ends, start setup in the external
-app again. Never put connection credentials in a chat or file.
+Use **Settings → External apps → Revoke access** to stop it; it asks you to
+confirm first. Changing community or identity also ends access. If a
+connection ends, start setup in the external app again. Never put connection
+credentials in a chat or file.
 Older apps asked for limited read, post or create access, which Buzz no longer
 grants. Buzz shows an update notice for such a request; select **Deny**, update
 the app and start setup again. A saved limited approval does nothing until you
@@ -1176,7 +1177,7 @@ for another 30 days. Approval expires after 30 days without renewal. Buzz shows
 this policy before you authorize access. Expired or revoked approval requires
 new owner consent. The app can restore the same access after Buzz or the app
 restarts. Keep Buzz open in the approved community. Keys stay in Buzz. Use **Settings > External apps > Revoke access** to remove approval,
-even when no session is connected. Full access requires new approval.
+even when no session is connected; it asks you to confirm first. Full access requires new approval.
 
 ### Reconnecting an old agent in a DM
 

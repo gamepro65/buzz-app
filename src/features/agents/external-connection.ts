@@ -211,7 +211,7 @@ export function createExternalApps() {
     } catch {
       update({
         ...state,
-        error: "Cannot revoke the saved approval. Retry in Buzz.",
+        error: "Could not remove the saved approval. Try again.",
       });
     }
   };
