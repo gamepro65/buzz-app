@@ -32,15 +32,19 @@ export function SecuritySettings({
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState<PairedTool | null>(null);
   const [revoking, setRevoking] = useState(false);
-  const section = useRef<HTMLElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
+  /** The paired-tools heading: where the dialog leaves focus when no row's
+   * Revoke can take it, so it never drops to body. Base UI refines a landing
+   * to its first tabbable descendant, which for this whole section would be
+   * the Authorize form's key field when a viewer is shown; the heading has
+   * none, so focus lands on the heading itself. */
+  const heading = useRef<HTMLHeadingElement>(null);
   /** Each row's Revoke, so the dialog can hand focus back to one. */
   const revokes = useRef(new Map<string, HTMLElement>());
   /** After a revoke, where the dialog leaves focus: the Revoke that takes the
-   * row's place, else the previous row's, else this section rather than
-   * body (Base UI settles on the section's first tabbable control while it
-   * has one). Base UI picks the target before the row leaves the DOM, so it
-   * is chosen when the revoke succeeds. */
+   * row's place, else the previous row's, else the heading. Base UI picks the
+   * target before the row leaves the DOM, so it is chosen when the revoke
+   * succeeds. */
   const landing = useRef<HTMLElement | null>(null);
   const refresh = useCallback(async () => {
     try {
@@ -62,13 +66,13 @@ export function SecuritySettings({
       const listed = tools ?? [];
       const index = listed.findIndex((t) => t.id === tool.id);
       // A `changed` refresh may have dropped the row while the dialog was
-      // open; with no place to count from, the section is the landing.
+      // open; with no place to count from, the heading is the landing.
       landing.current =
         index === -1
-          ? section.current
+          ? heading.current
           : ([...listed.slice(index + 1), ...listed.slice(0, index).reverse()]
               .map((t) => revokes.current.get(t.id))
-              .find(Boolean) ?? section.current);
+              .find(Boolean) ?? heading.current);
       setTools((current) => current?.filter((t) => t.id !== tool.id) ?? null);
       setError("");
       setConfirming(null);
@@ -84,17 +88,18 @@ export function SecuritySettings({
     </p>
   );
   return (
-    <section
-      ref={section}
-      tabIndex={-1}
-      aria-labelledby="security-settings-title"
-    >
+    <section aria-labelledby="security-settings-title">
       <Header
         id="security-settings-title"
         title="Security"
         subtitle="Tools paired on this device, and applications you authorize to act as you."
       />
-      <InlineHeader id="paired-tools-title" title="Paired command-line tools" />
+      <InlineHeader
+        ref={heading}
+        tabIndex={-1}
+        id="paired-tools-title"
+        title="Paired command-line tools"
+      />
       {!confirming && alert}
       {tools?.length === 0 ? (
         <EmptyState
@@ -138,10 +143,10 @@ export function SecuritySettings({
           initialFocus={cancel}
           finalFocus={() =>
             // On Cancel, the row's Revoke; if a refresh removed the row while
-            // the dialog was open, this section rather than body.
+            // the dialog was open, the heading rather than body.
             landing.current ??
             revokes.current.get(confirming.id) ??
-            section.current
+            heading.current
           }
           onClose={() => setConfirming(null)}
           actions={

@@ -14,7 +14,11 @@ import { listen } from "@tauri-apps/api/event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SecuritySettings } from "./SecuritySettings";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(), isTauri: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+  isTauri: vi.fn(),
+  Channel: class {},
+}));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 const tool = {
@@ -28,6 +32,13 @@ const tool = {
 const other = { ...tool, id: "p2", client: "notes", relay: "wss://other/" };
 const third = { ...tool, id: "p3", client: "deploy", relay: "wss://third/" };
 const revoked = ["credential_pairing_revoke", expect.anything()] as const;
+/** Settings passes a viewer whenever there is a native identity, mounting
+ * Authorize external identity below the list; its key field is then the
+ * section's first tabbable control once no row remains. */
+const viewers = [
+  { shown: "without a viewer", viewer: undefined },
+  { shown: "with a viewer", viewer: "ab".repeat(32) },
+];
 beforeEach(() => {
   vi.mocked(listen).mockResolvedValue(() => {});
 });
@@ -50,6 +61,19 @@ async function ask(revoke: HTMLElement | undefined, client: string) {
     ).toHaveFocus(),
   );
   return dialog;
+}
+
+/** Focus is on the paired-tools heading: not body, and not the Authorize
+ * form's key field when a viewer shows one. */
+async function landedOnHeading(viewer: string | undefined) {
+  await waitFor(() =>
+    expect(
+      screen.getByRole("heading", { name: "Paired command-line tools" }),
+    ).toHaveFocus(),
+  );
+  const key = screen.queryByLabelText("Application public key (hex)");
+  if (viewer) expect(key).toBeInTheDocument();
+  else expect(key).toBeNull();
 }
 
 it("lists paired tools and revokes one after asking", async () => {
@@ -82,16 +106,29 @@ it("lists paired tools and revokes one after asking", async () => {
   // Focus moves to the next row's Revoke, not body.
   const next = screen.getByRole("button", { name: "Revoke" });
   await waitFor(() => expect(next).toHaveFocus());
-  // Revoking the last tool keeps focus in this section.
-  await userEvent.click(
-    within(await ask(next, "notes")).getByRole("button", { name: "Revoke" }),
-  );
-  release();
-  expect(await screen.findByText("No paired tools")).toBeInTheDocument();
-  await waitFor(() =>
-    expect(screen.getByRole("region", { name: "Security" })).toHaveFocus(),
-  );
 });
+
+it.each(viewers)(
+  "revoking the last tool leaves focus on the paired-tools heading, $shown",
+  async ({ viewer }) => {
+    vi.mocked(invoke).mockImplementation(async (command) =>
+      command === "credential_pairings_list" ? [tool] : undefined,
+    );
+    render(<SecuritySettings viewer={viewer} />);
+    const revoke = await screen.findByRole("button", { name: "Revoke" });
+    await userEvent.click(
+      within(await ask(revoke, "buzz-cli")).getByRole("button", {
+        name: "Revoke",
+      }),
+    );
+    expect(invoke).toHaveBeenCalledWith("credential_pairing_revoke", {
+      id: "p1",
+    });
+    expect(await screen.findByText("No paired tools")).toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    await landedOnHeading(viewer);
+  },
+);
 
 it("revoking the last-listed tool moves focus to the row just before it", async () => {
   vi.mocked(invoke).mockImplementation(async (command) =>
@@ -170,50 +207,54 @@ it("keeps the row and the open dialog, and says why, when revoking fails", async
   await waitFor(() => expect(revoke).toHaveFocus());
 });
 
-it("keeps focus in Security when a refresh drops the row while its dialog is open", async () => {
-  let listed = [tool];
-  vi.mocked(invoke).mockImplementation(async (command) =>
-    command === "credential_pairings_list" ? listed : undefined,
-  );
-  render(<SecuritySettings />);
-  const revoke = await screen.findByRole("button", { name: "Revoke" });
-  const section = screen.getByRole("region", { name: "Security" });
-  // The section's own `changed` listener, as native would call it.
-  const changed = vi
-    .mocked(listen)
-    .mock.calls.filter(([event]) => event === "credential-pairings-changed")
-    .at(-1)?.[1];
-  if (!changed) throw new Error("Not listening for changes");
-  const refresh = (tools: (typeof tool)[]) => {
-    listed = tools;
-    return act(async () => {
-      changed({ event: "credential-pairings-changed", id: 1, payload: null });
+it.each(viewers)(
+  "keeps focus on the paired-tools heading when a refresh drops the row while its dialog is open, $shown",
+  async ({ viewer }) => {
+    let listed = [tool];
+    vi.mocked(invoke).mockImplementation(async (command) =>
+      command === "credential_pairings_list" ? listed : undefined,
+    );
+    render(<SecuritySettings viewer={viewer} />);
+    const revoke = await screen.findByRole("button", { name: "Revoke" });
+    // The section's own `changed` listener, as native would call it.
+    const changed = vi
+      .mocked(listen)
+      .mock.calls.filter(([event]) => event === "credential-pairings-changed")
+      .at(-1)?.[1];
+    if (!changed) throw new Error("Not listening for changes");
+    const refresh = (tools: (typeof tool)[]) => {
+      listed = tools;
+      return act(async () => {
+        changed({ event: "credential-pairings-changed", id: 1, payload: null });
+      });
+    };
+    // Revoked elsewhere while the dialog is open, then Escape: the heading,
+    // not body and not the Authorize form's key field.
+    await ask(revoke, "buzz-cli");
+    await refresh([]);
+    await waitFor(() => expect(screen.queryByText("buzz-cli")).toBeNull());
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await landedOnHeading(viewer);
+    expect(invoke).not.toHaveBeenCalledWith(...revoked);
+    // The same, but confirming: the row is gone, so the heading again.
+    await refresh([tool]);
+    const dialog = await ask(
+      await screen.findByRole("button", { name: "Revoke" }),
+      "buzz-cli",
+    );
+    await refresh([]);
+    await waitFor(() => expect(screen.queryByText("buzz-cli")).toBeNull());
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "Revoke" }),
+    );
+    expect(invoke).toHaveBeenCalledWith("credential_pairing_revoke", {
+      id: "p1",
     });
-  };
-  // Revoked elsewhere while the dialog is open, then Escape: the section
-  // (no tabbable control remains in it), not body.
-  await ask(revoke, "buzz-cli");
-  await refresh([]);
-  await waitFor(() => expect(screen.queryByText("buzz-cli")).toBeNull());
-  await userEvent.keyboard("{Escape}");
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  await waitFor(() => expect(section).toHaveFocus());
-  expect(invoke).not.toHaveBeenCalledWith(...revoked);
-  // The same, but confirming: the row is gone, so the section again.
-  await refresh([tool]);
-  const dialog = await ask(
-    await screen.findByRole("button", { name: "Revoke" }),
-    "buzz-cli",
-  );
-  await refresh([]);
-  await waitFor(() => expect(screen.queryByText("buzz-cli")).toBeNull());
-  await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
-  expect(invoke).toHaveBeenCalledWith("credential_pairing_revoke", {
-    id: "p1",
-  });
-  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  await waitFor(() => expect(section).toHaveFocus());
-});
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await landedOnHeading(viewer);
+  },
+);
 
 it("shows an empty state, and a read failure", async () => {
   vi.mocked(invoke).mockResolvedValueOnce([]);

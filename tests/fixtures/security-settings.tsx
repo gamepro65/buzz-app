@@ -1,4 +1,6 @@
 // The production Security settings over an in-memory native IPC. No Keychain.
+// `?viewer=1` mounts Authorize external identity below the list, as Settings
+// does with a native identity; the mock does not serve authorizing a key.
 import { mockIPC } from "@tauri-apps/api/mocks";
 import { createRoot } from "react-dom/client";
 import { SecuritySettings } from "../../src/app/SecuritySettings";
@@ -48,7 +50,9 @@ function Fixture() {
   useKeyboardFocusVisibility();
   return (
     <main className="mx-auto grid max-w-3xl gap-section-gap p-4">
-      <SecuritySettings />
+      <SecuritySettings
+        viewer={parameters.has("viewer") ? "ab".repeat(32) : undefined}
+      />
     </main>
   );
 }
