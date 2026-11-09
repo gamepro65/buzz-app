@@ -32,6 +32,10 @@ export function SecuritySettings({
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState<PairedTool | null>(null);
   const [revoking, setRevoking] = useState(false);
+  /** Why the open confirmation's revoke failed. Owned by the dialog, apart
+   * from the list's read error: a `changed` refresh that succeeds or fails
+   * while the dialog is open must neither clear nor replace it. */
+  const [revokeError, setRevokeError] = useState("");
   const cancel = useRef<HTMLButtonElement>(null);
   /** The paired-tools heading: where the dialog leaves focus when no row's
    * Revoke can take it, so it never drops to body. Base UI refines a landing
@@ -59,8 +63,13 @@ export function SecuritySettings({
     void refresh();
     return onPairingEvents({ changed: () => void refresh() });
   }, [refresh]);
+  const dismiss = () => {
+    setConfirming(null);
+    setRevokeError("");
+  };
   const revoke = async (tool: PairedTool) => {
     setRevoking(true);
+    setRevokeError("");
     try {
       await revokePairedTool(tool.id);
       const listed = tools ?? [];
@@ -74,19 +83,19 @@ export function SecuritySettings({
               .map((t) => revokes.current.get(t.id))
               .find(Boolean) ?? heading.current);
       setTools((current) => current?.filter((t) => t.id !== tool.id) ?? null);
-      setError("");
       setConfirming(null);
     } catch (reason) {
-      setError(String(reason));
+      setRevokeError(String(reason));
     } finally {
       setRevoking(false);
     }
   };
-  const alert = error && (
-    <p role="alert" className="text-body-sm text-danger">
-      {error}
-    </p>
-  );
+  const alert = (message: string) =>
+    message && (
+      <p role="alert" className="text-body-sm text-danger">
+        {message}
+      </p>
+    );
   return (
     <section aria-labelledby="security-settings-title">
       <Header
@@ -100,7 +109,7 @@ export function SecuritySettings({
         id="paired-tools-title"
         title="Paired command-line tools"
       />
-      {!confirming && alert}
+      {alert(error)}
       {tools?.length === 0 ? (
         <EmptyState
           icon={<LockIcon />}
@@ -123,7 +132,7 @@ export function SecuritySettings({
                     }}
                     onClick={() => {
                       landing.current = null;
-                      setError("");
+                      setRevokeError("");
                       setConfirming(tool);
                     }}
                   >
@@ -148,14 +157,10 @@ export function SecuritySettings({
             revokes.current.get(confirming.id) ??
             heading.current
           }
-          onClose={() => setConfirming(null)}
+          onClose={dismiss}
           actions={
             <>
-              <Button
-                ref={cancel}
-                disabled={revoking}
-                onClick={() => setConfirming(null)}
-              >
+              <Button ref={cancel} disabled={revoking} onClick={dismiss}>
                 Cancel
               </Button>
               <Button
@@ -168,7 +173,7 @@ export function SecuritySettings({
             </>
           }
         >
-          {alert}
+          {alert(revokeError)}
         </AlertDialog>
       )}
       {viewer && <ExternalIdentityAuthorization key={viewer} viewer={viewer} />}

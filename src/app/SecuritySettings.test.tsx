@@ -63,6 +63,20 @@ async function ask(revoke: HTMLElement | undefined, client: string) {
   return dialog;
 }
 
+/** Fires the section's `credential-pairings-changed` listener, as native
+ * does after any saved pairing mutation, and waits for the refresh. */
+function changedListener() {
+  const changed = vi
+    .mocked(listen)
+    .mock.calls.filter(([event]) => event === "credential-pairings-changed")
+    .at(-1)?.[1];
+  if (!changed) throw new Error("Not listening for changes");
+  return () =>
+    act(async () => {
+      changed({ event: "credential-pairings-changed", id: 1, payload: null });
+    });
+}
+
 /** Focus is on the paired-tools heading: not body, and not the Authorize
  * form's key field when a viewer shows one. */
 async function landedOnHeading(viewer: string | undefined) {
@@ -202,9 +216,91 @@ it("keeps the row and the open dialog, and says why, when revoking fails", async
   expect(screen.getByText("buzz-cli")).toBeInTheDocument();
   await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-  expect(screen.getByRole("alert")).toHaveTextContent("could not be saved");
+  // The failure belonged to that confirmation; the list has nothing to say.
+  expect(screen.queryByRole("alert")).toBeNull();
   expect(screen.getByText("buzz-cli")).toBeInTheDocument();
   await waitFor(() => expect(revoke).toHaveFocus());
+  // Asking again starts clean.
+  expect(within(await ask(revoke, "buzz-cli")).queryByRole("alert")).toBeNull();
+});
+
+it("keeps a failed revoke's message through a list refresh while the dialog is open", async () => {
+  let listed: Promise<(typeof tool)[]> = Promise.resolve([tool]);
+  vi.mocked(invoke).mockImplementation((command) => {
+    if (command === "credential_pairings_list") return listed;
+    return Promise.reject("Paired tools could not be saved to secure storage");
+  });
+  render(<SecuritySettings />);
+  const revoke = await screen.findByRole("button", { name: "Revoke" });
+  const refresh = changedListener();
+  const dialog = await ask(revoke, "buzz-cli");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+  const failure = await within(dialog).findByRole("alert");
+  expect(failure).toHaveTextContent("could not be saved");
+  // Another saved mutation refreshes the list successfully: the dialog is
+  // still open, so its failure message stays.
+  await refresh();
+  expect(dialog).toBeInTheDocument();
+  expect(within(dialog).getByRole("alert")).toHaveTextContent(
+    "could not be saved",
+  );
+  expect(screen.getAllByRole("alert", { hidden: true })).toHaveLength(1);
+  // A refresh that fails does not replace it either; the read error belongs
+  // to the list, behind the dialog.
+  listed = Promise.reject("Paired tools could not be read from secure storage");
+  await refresh();
+  expect(within(dialog).getByRole("alert")).toHaveTextContent(
+    "could not be saved",
+  );
+  expect(within(dialog).queryByText(/could not be read/)).toBeNull();
+  await waitFor(() =>
+    expect(
+      screen.getAllByRole("alert", { hidden: true }).map((a) => a.textContent),
+    ).toEqual([
+      "Paired tools could not be read from secure storage",
+      "Paired tools could not be saved to secure storage",
+    ]),
+  );
+  // Retrying clears the old message while the revoke runs.
+  let release = () => {};
+  vi.mocked(invoke).mockImplementation((command) =>
+    command === "credential_pairings_list"
+      ? listed
+      : new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+  );
+  await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+  release();
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  // Closed, the list's own read error is what remains.
+  expect(screen.getByRole("alert")).toHaveTextContent("could not be read");
+});
+
+it("does not show a list read failure inside an open revoke dialog", async () => {
+  let listed: Promise<(typeof tool)[]> = Promise.resolve([tool]);
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "credential_pairings_list" ? listed : undefined,
+  );
+  render(<SecuritySettings />);
+  const revoke = await screen.findByRole("button", { name: "Revoke" });
+  const refresh = changedListener();
+  const dialog = await ask(revoke, "buzz-cli");
+  listed = Promise.reject("Paired tools could not be read from secure storage");
+  await refresh();
+  await waitFor(() => expect(screen.queryByText("buzz-cli")).toBeNull());
+  expect(dialog).toBeInTheDocument();
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+  // The read error is on the list, behind the modal.
+  const alerts = screen.getAllByRole("alert", { hidden: true });
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0]).toHaveTextContent("could not be read");
+  expect(dialog).not.toContainElement(alerts[0] ?? null);
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(screen.getByRole("alert")).toHaveTextContent("could not be read");
+  expect(invoke).not.toHaveBeenCalledWith(...revoked);
 });
 
 it.each(viewers)(
@@ -216,17 +312,10 @@ it.each(viewers)(
     );
     render(<SecuritySettings viewer={viewer} />);
     const revoke = await screen.findByRole("button", { name: "Revoke" });
-    // The section's own `changed` listener, as native would call it.
-    const changed = vi
-      .mocked(listen)
-      .mock.calls.filter(([event]) => event === "credential-pairings-changed")
-      .at(-1)?.[1];
-    if (!changed) throw new Error("Not listening for changes");
+    const changed = changedListener();
     const refresh = (tools: (typeof tool)[]) => {
       listed = tools;
-      return act(async () => {
-        changed({ event: "credential-pairings-changed", id: 1, payload: null });
-      });
+      return changed();
     };
     // Revoked elsewhere while the dialog is open, then Escape: the heading,
     // not body and not the Authorize form's key field.
