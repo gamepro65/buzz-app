@@ -30,15 +30,20 @@ let tools = [
     expires: now + 27 * day,
   },
 ];
-// `release-notes` refuses to be revoked, to show the failure path.
-mockIPC((command, payload) => {
-  if (command === "credential_pairings_list") return tools;
-  if (command !== "credential_pairing_revoke")
-    throw new Error(`Unexpected command ${command}`);
-  const { id } = payload as { id: string };
-  if (id === "p2") throw "Paired tools could not be saved to secure storage";
-  tools = tools.filter((tool) => tool.id !== id);
-});
+// `release-notes` refuses to be revoked, to show the failure path. The mock
+// serves the event plugin itself, so the section's `credential-pairings-changed`
+// listener is accepted and a test can `emit` it to refresh the list.
+mockIPC(
+  (command, payload) => {
+    if (command === "credential_pairings_list") return tools;
+    if (command !== "credential_pairing_revoke")
+      throw new Error(`Unexpected command ${command}`);
+    const { id } = payload as { id: string };
+    if (id === "p2") throw "Paired tools could not be saved to secure storage";
+    tools = tools.filter((tool) => tool.id !== id);
+  },
+  { shouldMockEvents: true },
+);
 function Fixture() {
   useKeyboardFocusVisibility();
   return (

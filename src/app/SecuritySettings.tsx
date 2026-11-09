@@ -38,8 +38,9 @@ export function SecuritySettings({
   const revokes = useRef(new Map<string, HTMLElement>());
   /** After a revoke, where the dialog leaves focus: the Revoke that takes the
    * row's place, else the previous row's, else this section rather than
-   * body. Base UI picks the target before the row leaves the DOM, so it is
-   * chosen when the revoke succeeds. */
+   * body (Base UI settles on the section's first tabbable control while it
+   * has one). Base UI picks the target before the row leaves the DOM, so it
+   * is chosen when the revoke succeeds. */
   const landing = useRef<HTMLElement | null>(null);
   const refresh = useCallback(async () => {
     try {
@@ -60,10 +61,14 @@ export function SecuritySettings({
       await revokePairedTool(tool.id);
       const listed = tools ?? [];
       const index = listed.findIndex((t) => t.id === tool.id);
+      // A `changed` refresh may have dropped the row while the dialog was
+      // open; with no place to count from, the section is the landing.
       landing.current =
-        [...listed.slice(index + 1), ...listed.slice(0, index).reverse()]
-          .map((t) => revokes.current.get(t.id))
-          .find(Boolean) ?? section.current;
+        index === -1
+          ? section.current
+          : ([...listed.slice(index + 1), ...listed.slice(0, index).reverse()]
+              .map((t) => revokes.current.get(t.id))
+              .find(Boolean) ?? section.current);
       setTools((current) => current?.filter((t) => t.id !== tool.id) ?? null);
       setError("");
       setConfirming(null);
@@ -132,7 +137,11 @@ export function SecuritySettings({
           pending={revoking}
           initialFocus={cancel}
           finalFocus={() =>
-            landing.current ?? revokes.current.get(confirming.id) ?? false
+            // On Cancel, the row's Revoke; if a refresh removed the row while
+            // the dialog was open, this section rather than body.
+            landing.current ??
+            revokes.current.get(confirming.id) ??
+            section.current
           }
           onClose={() => setConfirming(null)}
           actions={

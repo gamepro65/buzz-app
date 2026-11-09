@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
 import {
+  act,
   cleanup,
   render,
   screen,
@@ -25,6 +26,7 @@ const tool = {
   expires: 1_802_592_000,
 };
 const other = { ...tool, id: "p2", client: "notes", relay: "wss://other/" };
+const third = { ...tool, id: "p3", client: "deploy", relay: "wss://third/" };
 const revoked = ["credential_pairing_revoke", expect.anything()] as const;
 beforeEach(() => {
   vi.mocked(listen).mockResolvedValue(() => {});
@@ -91,6 +93,39 @@ it("lists paired tools and revokes one after asking", async () => {
   );
 });
 
+it("revoking the last-listed tool moves focus to the row just before it", async () => {
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "credential_pairings_list" ? [tool, other, third] : undefined,
+  );
+  render(<SecuritySettings />);
+  expect(await screen.findByText("deploy")).toBeInTheDocument();
+  const [first, second, last] = screen.getAllByRole("button", {
+    name: "Revoke",
+  });
+  // No row follows the third, so focus goes to the second: the immediately
+  // previous row, not the top one.
+  await userEvent.click(
+    within(await ask(last, "deploy")).getByRole("button", { name: "Revoke" }),
+  );
+  expect(invoke).toHaveBeenCalledWith("credential_pairing_revoke", {
+    id: "p3",
+  });
+  await waitFor(() => expect(screen.queryByText("deploy")).toBeNull());
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  await waitFor(() => expect(second).toHaveFocus());
+  // Then the second of two: focus goes to the first row's Revoke, not body.
+  await userEvent.click(
+    within(await ask(second, "notes")).getByRole("button", { name: "Revoke" }),
+  );
+  expect(invoke).toHaveBeenCalledWith("credential_pairing_revoke", {
+    id: "p2",
+  });
+  await waitFor(() => expect(screen.queryByText("notes")).toBeNull());
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect(screen.getByText("buzz-cli")).toBeInTheDocument();
+  await waitFor(() => expect(first).toHaveFocus());
+});
+
 it("cancels without revoking and returns focus to the row's Revoke", async () => {
   vi.mocked(invoke).mockImplementation(async (command) =>
     command === "credential_pairings_list" ? [tool] : undefined,
@@ -133,6 +168,51 @@ it("keeps the row and the open dialog, and says why, when revoking fails", async
   expect(screen.getByRole("alert")).toHaveTextContent("could not be saved");
   expect(screen.getByText("buzz-cli")).toBeInTheDocument();
   await waitFor(() => expect(revoke).toHaveFocus());
+});
+
+it("keeps focus in Security when a refresh drops the row while its dialog is open", async () => {
+  let listed = [tool];
+  vi.mocked(invoke).mockImplementation(async (command) =>
+    command === "credential_pairings_list" ? listed : undefined,
+  );
+  render(<SecuritySettings />);
+  const revoke = await screen.findByRole("button", { name: "Revoke" });
+  const section = screen.getByRole("region", { name: "Security" });
+  // The section's own `changed` listener, as native would call it.
+  const changed = vi
+    .mocked(listen)
+    .mock.calls.filter(([event]) => event === "credential-pairings-changed")
+    .at(-1)?.[1];
+  if (!changed) throw new Error("Not listening for changes");
+  const refresh = (tools: (typeof tool)[]) => {
+    listed = tools;
+    return act(async () => {
+      changed({ event: "credential-pairings-changed", id: 1, payload: null });
+    });
+  };
+  // Revoked elsewhere while the dialog is open, then Escape: the section
+  // (no tabbable control remains in it), not body.
+  await ask(revoke, "buzz-cli");
+  await refresh([]);
+  await waitFor(() => expect(screen.queryByText("buzz-cli")).toBeNull());
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await waitFor(() => expect(section).toHaveFocus());
+  expect(invoke).not.toHaveBeenCalledWith(...revoked);
+  // The same, but confirming: the row is gone, so the section again.
+  await refresh([tool]);
+  const dialog = await ask(
+    await screen.findByRole("button", { name: "Revoke" }),
+    "buzz-cli",
+  );
+  await refresh([]);
+  await waitFor(() => expect(screen.queryByText("buzz-cli")).toBeNull());
+  await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+  expect(invoke).toHaveBeenCalledWith("credential_pairing_revoke", {
+    id: "p1",
+  });
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  await waitFor(() => expect(section).toHaveFocus());
 });
 
 it("shows an empty state, and a read failure", async () => {
