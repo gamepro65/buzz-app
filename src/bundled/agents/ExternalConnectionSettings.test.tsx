@@ -137,7 +137,7 @@ it("keeps access when the owner cancels or escapes the confirmation", async () =
   expect(screen.getByText("Test client")).toBeVisible();
 });
 
-it("closes without revoking when another app's approval replaces the grant", async () => {
+it("closes without revoking when a fresh approval with the same name replaces the grant", async () => {
   const { connection, sessions } = await connected();
   render(<ExternalConnectionSettings connection={connection} />);
   const user = userEvent.setup();
@@ -152,14 +152,15 @@ it("closes without revoking when another app's approval replaces the grant", asy
     ).toHaveFocus(),
   );
   const revoke = vi.spyOn(connection, "revoke");
-  // The owner approves a second app in its own consent dialog meanwhile.
+  // The owner approves a second request in its own consent dialog meanwhile.
+  // Its name is not attested, so a repeat of the same name must still count.
   await act(async () => {
-    connection.open(request("Other client", "B"), "viewer");
+    connection.open(request("Test client", "B"), "viewer");
     await connection.approve("test-agent");
   });
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(revoke).not.toHaveBeenCalled();
-  expect(screen.getByText("Other client")).toBeVisible();
+  expect(screen.getByText("Test client")).toBeVisible();
   expect(sessions).toHaveLength(2);
   expect((sessions[1] as Session).signal.aborted).toBe(false);
   expect(screen.getByRole("button", { name: "Revoke access" })).toBe(trigger);

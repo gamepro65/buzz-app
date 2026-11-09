@@ -10,7 +10,7 @@ import { Button } from "../../shared/design-system/ui/Button";
 import { AlertDialog } from "../../shared/design-system/ui/AlertDialog";
 
 /** The grant an open confirmation names, as it was when the dialog opened. */
-type Confirming = Readonly<{ client: string; live: boolean }>;
+type Confirming = Readonly<{ id: number; client: string; live: boolean }>;
 
 export function ExternalConnectionSettings({
   connection,
@@ -29,17 +29,17 @@ export function ExternalConnectionSettings({
   // revoke settles and focus has somewhere to land.
   const [confirming, setConfirming] = useState<Confirming>();
   const [revoking, setRevoking] = useState(false);
-  const client = grant?.client;
-  // Another app's approval can replace the grant while the dialog is open.
-  // That app was confirmed in its own consent dialog, not this one, so this
-  // one closes rather than revoke it.
+  const id = grant?.id;
+  // A fresh approval, under any name, can replace the grant while the dialog
+  // is open. It was confirmed in its own consent dialog, not this one, so
+  // this one closes rather than revoke it.
   useEffect(() => {
-    if (confirming && !revoking && client !== confirming.client)
+    if (confirming && !revoking && id !== confirming.id)
       setConfirming(undefined);
-  }, [confirming, revoking, client]);
+  }, [confirming, revoking, id]);
   const revoke = async () => {
     // The grant can also change between a render and the click.
-    if (connection.snapshot().grant?.client !== confirming?.client) {
+    if (connection.snapshot().grant?.id !== confirming?.id) {
       setConfirming(undefined);
       return;
     }
@@ -96,6 +96,7 @@ export function ExternalConnectionSettings({
                     // An earlier error would otherwise read as a revoke failure.
                     connection.clearError();
                     setConfirming({
+                      id: grant.id,
                       client: grant.client,
                       live: grant.phase !== "ended",
                     });
