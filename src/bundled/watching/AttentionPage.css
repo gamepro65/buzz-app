@@ -172,6 +172,10 @@
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* A long title shrinks before the status button does. */
+.attention-interest-head > .attention-actions {
+  flex-shrink: 0;
+}
 .attention-instructions-preview {
   min-width: 0;
   flex: 1;
@@ -597,6 +601,39 @@ html[data-keyboard-navigation] .attention-disclosure:focus-visible {
 }
 .attention-table-row > .attention-status {
   justify-self: end;
+}
+
+/* Below about 32rem the title column falls under 8rem, so each watch stacks:
+   the name and status share the first line, and the source and destination sit
+   under the name. The label stays, as it does for an interest without watches. */
+@container (max-width: 32rem) {
+  .attention-column-headings {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .attention-column-headings > :not(h5) {
+    display: none;
+  }
+  /* The first column is the icon's width, so the second line aligns with the name. */
+  .attention-table-row {
+    grid-template-columns: var(--space-4) auto minmax(0, 1fr) auto;
+  }
+  .attention-heading {
+    grid-column: 1 / 4;
+  }
+  .attention-reference {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .attention-reference-label {
+    max-inline-size: 7rem;
+  }
+  .attention-destination {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
+  .attention-reference + .attention-destination {
+    grid-column: 3 / -1;
+  }
 }
 
 /* Disabled watches remain inspectable and can still be re-enabled. */
